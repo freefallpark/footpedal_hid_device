@@ -7,6 +7,7 @@
 #include <csignal>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <vector>
 
 
@@ -30,8 +31,8 @@ struct FootPedalBehavior {
  * @brief Information that defines a specific usb footpedal
  */
 struct UsbFootPedalInfo {
-  unsigned short vendor_id;
-  unsigned short product_id;
+  unsigned short vendor_id{};
+  unsigned short product_id{};
   FootPedalBehavior expected_behavior;
 };
 
@@ -87,32 +88,40 @@ class UsbFootPedal {
      */
     FootPedalState GetState();
 
-    /**
-     * @brief Determines Behavior of a usb foot pedal
-     * @param vendor_id Vendor ID of usb device
-     * @param product_id Product ID of usb device
-     * @return Upon Failure returns std::nullopt, otherwise returns the press and release behavior
-     * of the pedal
-     */
-    static std::optional<FootPedalBehavior> DetermineExpectedPedalValue(
-        unsigned short vendor_id,
-        unsigned short product_id);
-
   private:
+    struct HidLibrary {
+      HidLibrary() {
+        if (hid_init()) throw std::runtime_error("hid_init failed");
+      }
+      ~HidLibrary() noexcept { hid_exit(); }
+      HidLibrary(const HidLibrary&) = delete;
+      HidLibrary& operator=(const HidLibrary&) = delete;
+    };
+    struct HidDeviceHandle {
+      HidDeviceHandle() = delete;
+      explicit HidDeviceHandle(hid_device *device) : device_(device) {
+        if (!device_) throw std::runtime_error("Failed to open device");
+      }
+      ~HidDeviceHandle() noexcept { if (device_) hid_close(device_); }
+      HidDeviceHandle(const HidDeviceHandle&) = delete;
+      HidDeviceHandle& operator=(const HidDeviceHandle&) = delete;
+      HidDeviceHandle(HidDeviceHandle&& o)  noexcept : device_(o.device_) {o.device_ = nullptr;}
+      HidDeviceHandle& operator=(HidDeviceHandle&& o) noexcept {
+        if (device_) hid_close(device_);
+        device_ = o.device_;
+        o.device_ = nullptr;
+        return *this;
+      }
+      [[nodiscard]] hid_device * get() const noexcept { return device_; }
+      private:
+        hid_device *device_;
+    };
+
     /**
      * @brief Initializes the usb foot pedal
      * @return true upon success, false upon failure
      */
     bool Init();
-
-    /**
-     *
-     * @param vendor_id Vendor ID of usb device
-     * @param product_id Product ID of usb device
-     * @return returns pointer to hid_device upon success, nullptr upon failure
-     */
-    static hid_device *Init(unsigned short vendor_id,
-                            unsigned short product_id);
 
     /**
      * @brief Setter for pedal state
@@ -123,7 +132,8 @@ class UsbFootPedal {
     std::mutex mtx_;
     const volatile sig_atomic_t &exit_flag_;
     const UsbFootPedalInfo pedal_info_;
-    hid_device *pedal_device_;
+    HidLibrary hid_library_;
+    std::optional<HidDeviceHandle> pedal_device_;
     FootPedalCallbacks *callbacks_;
     FootPedalState pedal_state_ = FootPedalState::kReleased;
 };
